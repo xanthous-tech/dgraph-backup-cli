@@ -1,12 +1,4 @@
-##usage
+## Usage
 ```
-
-dgraph-backup backup-now -h
-
-```
-
-## Restore
-```
-dgraph-backup restore -h
-
+dgraph-backup -h
 ```
