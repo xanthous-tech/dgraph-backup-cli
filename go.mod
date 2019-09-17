@@ -5,7 +5,7 @@ go 1.12
 require (
 	github.com/aws/aws-sdk-go v1.23.22
 	github.com/dsnet/compress v0.0.1 // indirect
-	github.com/fatih/color v1.7.0 // indirect
+	github.com/fatih/color v1.7.0
 	github.com/frankban/quicktest v1.5.0 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/jasonlvhit/gocron v0.0.0-20190829164038-7ef3bafdc25c
