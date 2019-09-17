@@ -3,10 +3,13 @@ package main
 import (
   "compress/flate"
   "fmt"
+  "github.com/aws/aws-sdk-go/service/s3"
   "io/ioutil"
   "log"
   "net/http"
   "os"
+  "os/exec"
+  "regexp"
   "strings"
   "time"
 
@@ -20,6 +23,7 @@ import (
   "github.com/jpillora/backoff"
   "github.com/mholt/archiver"
   "github.com/urfave/cli"
+  "github.com/manifoldco/promptui"
 )
 
 var (
@@ -147,6 +151,77 @@ func cronjob(c *cli.Context) {
   <-gocron.Start()
 }
 
+func getBackUpFile(sess *session.Session, c *cli.Context) (key string) {
+
+  // Create S3 service client
+  svc := s3.New(sess)
+  resp, err := svc.ListObjectsV2(&s3.ListObjectsV2Input{Bucket: aws.String(c.String(AwsBucket))})
+  if err != nil {
+    log.Println("ERROR getting bucket")
+  }
+
+  templates := &promptui.SelectTemplates{
+    Label:    "{{ . }}?",
+    Active:   "\U0001F336 {{ .Key }} ({{ .Size }})",
+    Inactive: "  {{ .Key }} ({{ .Size }})",
+    Selected: "\U0001F336 {{ .Key }}",
+    Details: `
+--------- BACKUP FILE ----------
+{{ "Name:" | faint }}	{{ .Key }}
+{{ "Size:" | faint }}	{{ .Size }}
+{{ "Last Modified:" | faint }}	{{ .LastModified }}`,
+  }
+
+  prompt := promptui.Select{
+    Label:     "Select BackupTo Restore",
+    Items:     resp.Contents,
+    Templates: templates,
+  }
+  _, result, err := prompt.Run()
+  r := regexp.MustCompile(`Key[:]\s\"(.*)\"`)
+  key = r.FindStringSubmatch(result)[1]
+  return key
+}
+
+func DownloadFile(c *cli.Context, sess *session.Session, fileName string) (filepath string) {
+  downloader := s3manager.NewDownloader(sess)
+  file, err := os.Create(fileName)
+  if err != nil {
+    log.Fatal("Unable to open file %q, %v", err)
+  }
+  defer file.Close()
+  numBytes, err := downloader.Download(file,
+    &s3.GetObjectInput{
+      Bucket: aws.String(c.String(AwsBucket)),
+      Key:    aws.String(fileName),
+    })
+  if err != nil {
+    log.Fatal("Unable to download item %q, %v", fileName, err)
+  }
+  fmt.Println("Downloaded", file.Name(), numBytes, "bytes")
+  err = archiver.Unarchive("./"+file.Name(), "data")
+  return "./data/export/"
+}
+
+func Restore(c *cli.Context) {
+  sess := session.Must(session.NewSession(&aws.Config{
+    Region:      aws.String(c.String(AwsRegion)),
+    Credentials: credentials.NewStaticCredentials(c.String(AwsKey), c.String(AwsSecret), ""),
+  }))
+  file := getBackUpFile(sess, c)
+  filePath := DownloadFile(c, sess, file)
+  cmd := exec.Command("dgraph", "live", "-f", filePath)
+  stdoutStderr, err := cmd.CombinedOutput()
+  if err != nil {
+    log.Fatal(err)
+  }
+  fmt.Printf("%s\n", stdoutStderr)
+  if err != nil {
+    log.Fatal("Problem with Running", err)
+  }
+
+}
+
 func main() {
   app := cli.NewApp()
   app.Name = "dgraph-backup"
@@ -191,9 +266,9 @@ func main() {
       Required: true,
     },
     cli.StringFlag{
-      Name:     ExportPath,
-      EnvVar:   "EXPORT_PATH",
-      Value:    "./export",
+      Name:   ExportPath,
+      EnvVar: "EXPORT_PATH",
+      Value:  "./export",
     },
   }
   app.Commands = []cli.Command{
@@ -208,8 +283,9 @@ func main() {
       Flags:  Flags,
     },
     {
-      Name:  "restore",
-      Flags: Flags,
+      Name:   "restore",
+      Action: Restore,
+      Flags:  Flags,
     },
   }
 
