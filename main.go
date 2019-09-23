@@ -21,20 +21,21 @@ import (
   "github.com/fatih/color"
   "github.com/jasonlvhit/gocron"
   "github.com/jpillora/backoff"
+  "github.com/manifoldco/promptui"
   "github.com/mholt/archiver"
   "github.com/urfave/cli"
-  "github.com/manifoldco/promptui"
 )
 
 var (
-  Format     string = "format"
-  AwsBucket  string = "aws-bucket"
-  AwsRegion  string = "aws-region"
-  DgraphHost string = "dgraph-host"
-  FilePrefix string = "file-prefix"
-  AwsKey     string = "aws-key"
-  AwsSecret  string = "aws-secret"
-  ExportPath string = "export-path"
+  Format          string = "format"
+  AwsBucket       string = "aws-bucket"
+  AwsRegion       string = "aws-region"
+  DgraphHost      string = "dgraph-host"
+  FilePrefix      string = "file-prefix"
+  AwsKey          string = "aws-key"
+  AwsSecret       string = "aws-secret"
+  ExportPath      string = "export-path"
+  CronEveryMinute string = "cron-every-minute"
 )
 
 func requestExport(c *cli.Context) (success bool) {
@@ -71,7 +72,7 @@ func zipIt(c *cli.Context) (filePath string, err error) {
     CompressionLevel: flate.DefaultCompression,
   }
   fileName := "./" + c.String(FilePrefix) + "-" + time.Now().Format(time.RFC3339) + ".zip"
-  err = z.Archive([]string{"./export"}, fileName)
+  err = z.Archive([]string{c.String(ExportPath)}, fileName)
   if err != nil {
     log.Fatal("err Zipping", err)
     return "", err
@@ -110,7 +111,7 @@ func shipIt(c *cli.Context, filename string) error {
 
 func cleanUp(c *cli.Context, filePath string) {
   err := os.Remove(filePath)
-  err = os.Remove(c.String(ExportPath))
+  err = os.RemoveAll(c.String(ExportPath))
   if err != nil {
     fmt.Println("Error while deleting side effects.", err)
   }
@@ -128,8 +129,9 @@ func Export(c *cli.Context) {
         d := b.Duration()
         log.Printf("Export is not ready yet, retrying in  %s", d)
         time.Sleep(d)
-        if b.Attempt() == 10 {
-          log.Fatal("NO SUCCESS  after 10 try")
+        if b.Attempt() == 1 {
+          log.Println("NO SUCCESS  after 10 try")
+          os.Exit(0)
         }
         continue
       }
@@ -147,7 +149,7 @@ func Export(c *cli.Context) {
 }
 
 func cronjob(c *cli.Context) {
-  gocron.Every(1).Day().At("01:00").Do(Export, c)
+  gocron.Every(c.Uint64(CronEveryMinute)).Minutes().Do(Export, c)
   <-gocron.Start()
 }
 
@@ -269,6 +271,12 @@ func main() {
       Name:   ExportPath,
       EnvVar: "EXPORT_PATH",
       Value:  "./export",
+    },
+
+    cli.Uint64Flag{
+      Name:   CronEveryMinute,
+      EnvVar: "CRON_EVERY_MINUTE",
+      Value:  1,
     },
   }
   app.Commands = []cli.Command{
