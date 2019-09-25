@@ -4,11 +4,13 @@ import (
   "compress/flate"
   "fmt"
   "github.com/aws/aws-sdk-go/service/s3"
+  "io"
   "io/ioutil"
   "log"
   "net/http"
   "os"
   "os/exec"
+  "path/filepath"
   "regexp"
   "strings"
   "time"
@@ -36,6 +38,11 @@ var (
   AwsSecret       string = "aws-secret"
   ExportPath      string = "export-path"
   CronEveryMinute string = "cron-every-minute"
+  HostName        string = "hostname"
+  DgraphAlphaHost string = "dgraph-alpha-host"
+  DgraphAlphaPort string = "dgraph-alpha-port"
+  DgraphZeroHost  string = "dgraph-zero-host"
+  DgraphZeroPort  string = "dgraph-zero-port"
 )
 
 func requestExport(c *cli.Context) (success bool) {
@@ -71,7 +78,7 @@ func zipIt(c *cli.Context) (filePath string, err error) {
   z := archiver.Zip{
     CompressionLevel: flate.DefaultCompression,
   }
-  fileName := "./" + c.String(FilePrefix) + "-" + time.Now().Format(time.RFC3339) + ".zip"
+  fileName := "./" + c.String(FilePrefix) + "-" + c.String(HostName) + "-" + time.Now().Format(time.RFC3339) + ".zip"
   err = z.Archive([]string{c.String(ExportPath)}, fileName)
   if err != nil {
     log.Fatal("err Zipping", err)
@@ -205,6 +212,26 @@ func DownloadFile(c *cli.Context, sess *session.Session, fileName string) (filep
   return "./data/export/"
 }
 
+func getFiles(locPath string) (rdfFiles []string, schemaFiles []string, err error) {
+  err = filepath.Walk(locPath, func(path string, info os.FileInfo, err error) error {
+    if strings.Contains(path, "gz") {
+      filePathPieces := strings.Split(path, ".")
+      filePrefix := len(filePathPieces) - 2
+      if filePathPieces[filePrefix] == "rdf" {
+        rdfFiles = append(rdfFiles, path)
+      } else if filePathPieces[filePrefix] == "schema" {
+        schemaFiles = append(schemaFiles, path)
+      }
+    }
+    return nil
+  })
+  if err != nil {
+    log.Panic("No file Found", err)
+    return nil, nil, err
+  }
+  return rdfFiles, schemaFiles, nil
+}
+
 func Restore(c *cli.Context) {
   sess := session.Must(session.NewSession(&aws.Config{
     Region:      aws.String(c.String(AwsRegion)),
@@ -212,16 +239,28 @@ func Restore(c *cli.Context) {
   }))
   file := getBackUpFile(sess, c)
   filePath := DownloadFile(c, sess, file)
-  cmd := exec.Command("dgraph", "live", "-f", filePath)
-  stdoutStderr, err := cmd.CombinedOutput()
+  alphaAddr := c.String(DgraphAlphaHost) + ":" + c.String(DgraphAlphaPort)
+  zeroAddr := c.String(DgraphZeroHost) + ":" + c.String(DgraphZeroPort)
+  log.Println(filePath, alphaAddr, zeroAddr)
+  _, schemaFiles, _ := getFiles(filePath)
+  log.Println(schemaFiles)
+  log.Println("COMMAND", "dgraph", "live", "-f", filePath, "-a", alphaAddr, "-z", zeroAddr, "-s", schemaFiles[0])
+  cmd := exec.Command("dgraph", "live", "-f", filePath, "-a", alphaAddr, "-z", zeroAddr, "-s", schemaFiles[0])
+  stdin, err := cmd.StdinPipe()
   if err != nil {
-    log.Fatal(err)
+    fmt.Println(err) // replace with logger, or anything you want
   }
-  fmt.Printf("%s\n", stdoutStderr)
-  if err != nil {
-    log.Fatal("Problem with Running", err)
-  }
+  defer stdin.Close() // the doc says subProcess.Wait will close it, but I'm not sure, so I kept this line
 
+  cmd.Stdout = os.Stdout
+  cmd.Stderr = os.Stderr
+  fmt.Println("START") // for debug
+  if err = cmd.Start(); err != nil { // Use start, not run
+    fmt.Println("An error occured: ", err) // replace with logger, or anything you want
+  }
+  io.WriteString(stdin, "4\n")
+  cmd.Wait()
+  fmt.Println("END") // for debug
 }
 
 func main() {
@@ -272,11 +311,34 @@ func main() {
       EnvVar: "EXPORT_PATH",
       Value:  "./export",
     },
-
     cli.Uint64Flag{
       Name:   CronEveryMinute,
       EnvVar: "CRON_EVERY_MINUTE",
       Value:  1,
+    },
+    cli.StringFlag{
+      Name:   HostName,
+      EnvVar: "HOSTNAME",
+    },
+    cli.StringFlag{
+      Name:   DgraphAlphaHost,
+      EnvVar: "DGRAPH_ALPHA_PUBLIC_GRPC_PORT_9080_TCP_ADDR",
+      Value:  "localhost",
+    },
+    cli.StringFlag{
+      Name:   DgraphAlphaPort,
+      EnvVar: "DGRAPH_ALPHA_PUBLIC_GRPC_SERVICE_PORT",
+      Value:  "9080",
+    },
+    cli.StringFlag{
+      Name:   DgraphZeroHost,
+      EnvVar: "DGRAPH_ZERO_PUBLIC_GRPC_PORT_5080_TCP_ADDR",
+      Value:  "localhost",
+    },
+    cli.StringFlag{
+      Name:   DgraphZeroPort,
+      EnvVar: "DGRAPH_ZERO_PUBLIC_GRPC_PORT_5080_TCP_PORT",
+      Value:  "5080",
     },
   }
   app.Commands = []cli.Command{
